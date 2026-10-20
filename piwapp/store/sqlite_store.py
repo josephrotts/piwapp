@@ -17,6 +17,14 @@ from typing import Any
 
 from ..events import MessagesUpsert, TypedEventEmitter, WAEventType
 
+#: Servers that carry traffic which is *not* a conversation: status updates and
+#: channel (newsletter) posts. A status from a contact is not a chat with that
+#: contact, so these must never reach the ``chats`` table — otherwise
+#: ``recent_chats()`` lists ``status@broadcast`` as if it were a person.
+_PSEUDO_CHAT_SUFFIXES = ("@broadcast", "@newsletter")
+_NOT_PSEUDO_CHAT_SQL = " AND ".join(
+    f"jid NOT LIKE '%{suffix}'" for suffix in _PSEUDO_CHAT_SUFFIXES)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     chat_jid   TEXT NOT NULL,
@@ -98,7 +106,8 @@ class SqliteStore:
             # keep `chats` usable without a history sync: previously chat rows
             # were only written by CHATS_UPSERT, which only the history blob
             # emits, so recent_chats()/list_chats() stayed empty forever.
-            chats.append((jid, None if jid.endswith("@g.us") else m.get("pushName"), ts))
+            if not jid.endswith(_PSEUDO_CHAT_SUFFIXES):
+                chats.append((jid, None if jid.endswith("@g.us") else m.get("pushName"), ts))
         if rows:
             self._db.executemany(
                 "INSERT OR REPLACE INTO messages "
@@ -163,8 +172,11 @@ class SqliteStore:
         return json.loads(r["data"]) if r else None
 
     def recent_chats(self, limit: int = 20) -> list[dict[str, Any]]:
+        # filter pseudo-chats in SQL (not in Python) so `limit` still returns
+        # that many real conversations on archives that already stored some
         rows = self._db.execute(
-            "SELECT * FROM chats ORDER BY conversation_timestamp DESC LIMIT ?", (limit,)).fetchall()
+            f"SELECT * FROM chats WHERE {_NOT_PSEUDO_CHAT_SQL} "
+            "ORDER BY conversation_timestamp DESC LIMIT ?", (limit,)).fetchall()
         out = []
         for r in rows:
             chat = dict(r)

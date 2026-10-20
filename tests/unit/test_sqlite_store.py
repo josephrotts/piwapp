@@ -140,3 +140,41 @@ async def test_chat_row_is_created_from_archived_message(tmp_path):
     assert by_jid[GROUP]["name"] is None
     assert by_jid[GROUP]["conversation_timestamp"] == 200
     store.close()
+
+
+async def test_status_and_channel_traffic_does_not_create_chats(tmp_path):
+    """Statuses and channel posts are traffic, not conversations: they must not
+    show up as chats (an earlier revision named `status@broadcast` after the
+    contact who posted the status)."""
+    db = str(tmp_path / "pseudo.db")
+    em = TypedEventEmitter()
+    store = SqliteStore(db)
+    store.bind(em)
+
+    await em.emit(WAEventType.MESSAGES_UPSERT, MessagesUpsert(messages=[
+        _msg("status@broadcast", "S1", text="story", ts=300, push="Ana"),
+        _msg("120363000000000000@newsletter", "N1", text="post", ts=200, push="Canal"),
+        _msg(JID, "M1", text="hola", ts=100),
+    ]))
+
+    assert [c["jid"] for c in store.recent_chats(10)] == [JID]
+    # the messages are still archived; only the chat rows are suppressed
+    assert store.message_count == 3
+    store.close()
+
+
+async def test_recent_chats_hides_already_stored_pseudo_chats(tmp_path):
+    """Archives written before the fix (or by a history sync) already contain
+    these rows; listing must hide them without requiring a migration."""
+    db = str(tmp_path / "legacy.db")
+    em = TypedEventEmitter()
+    store = SqliteStore(db)
+    store.bind(em)
+
+    await em.emit(WAEventType.CHATS_UPSERT, [
+        {"id": "status@broadcast", "name": "Ana", "conversationTimestamp": 500},
+        {"id": JID, "name": "Ana", "conversationTimestamp": 100},
+    ])
+
+    assert [c["jid"] for c in store.recent_chats(10)] == [JID]
+    store.close()
