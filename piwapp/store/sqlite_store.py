@@ -83,21 +83,35 @@ class SqliteStore:
     def _on_messages(self, payload: Any) -> None:
         msgs = payload.messages if isinstance(payload, MessagesUpsert) else payload.get("messages", [])
         rows = []
+        chats: list[tuple[str, str | None, int]] = []
         for m in msgs:
             key = m.get("key") or {}
             jid, mid = key.get("remoteJid"), key.get("id")
             if not jid or not mid:
                 continue
+            ts = int(m.get("messageTimestamp") or 0)
             rows.append((
                 jid, mid, 1 if key.get("fromMe") else 0, key.get("participant"),
-                int(m.get("messageTimestamp") or 0), m.get("pushName"),
+                ts, m.get("pushName"),
                 m.get("text"), _msg_proto_bytes(m.get("message")),
             ))
+            # keep `chats` usable without a history sync: previously chat rows
+            # were only written by CHATS_UPSERT, which only the history blob
+            # emits, so recent_chats()/list_chats() stayed empty forever.
+            chats.append((jid, None if jid.endswith("@g.us") else m.get("pushName"), ts))
         if rows:
             self._db.executemany(
                 "INSERT OR REPLACE INTO messages "
                 "(chat_jid,msg_id,from_me,participant,timestamp,push_name,text,proto) "
                 "VALUES (?,?,?,?,?,?,?,?)", rows)
+            self._db.executemany(
+                "INSERT INTO chats (jid,name,conversation_timestamp,unread_count,data) "
+                "VALUES (?,?,?,0,'{}') "
+                "ON CONFLICT(jid) DO UPDATE SET "
+                "  name = COALESCE(chats.name, excluded.name), "
+                "  conversation_timestamp = MAX(chats.conversation_timestamp, "
+                "                                excluded.conversation_timestamp)",
+                chats)
             self._db.commit()
 
     def _on_chats(self, payload: Any) -> None:

@@ -85,3 +85,35 @@ async def test_chats_contacts_and_search(tmp_path):
     assert store.recent_chats()[0]["name"] == "Alice"
     assert store.search_text("weather")[0]["key"]["id"] == "S1"
     store.close()
+
+
+async def test_chat_row_is_created_from_archived_message(tmp_path):
+    """Live traffic must keep `chats` populated; history sync may never arrive."""
+    em = TypedEventEmitter()
+    store = SqliteStore(str(tmp_path / "e.db"))
+    store.bind(em)
+
+    await em.emit(WAEventType.MESSAGES_UPSERT,
+                  MessagesUpsert(messages=[_msg(JID, "C1", text="hi", ts=100)],
+                                 type=UpsertType.NOTIFY))
+    chats = store.recent_chats()
+    assert [c["jid"] for c in chats] == [JID]
+    assert chats[0]["conversation_timestamp"] == 100
+    assert chats[0]["name"] == "X"  # pushName seeds a 1:1 chat name
+
+    # an older message must not move the chat back in time, nor clobber the name
+    await em.emit(WAEventType.MESSAGES_UPSERT,
+                  MessagesUpsert(messages=[_msg(JID, "C2", text="older", ts=5)],
+                                 type=UpsertType.NOTIFY))
+    assert store.recent_chats()[0]["conversation_timestamp"] == 100
+    assert store.recent_chats()[0]["name"] == "X"
+
+    # groups get no name from pushName (that would be a participant's)
+    await em.emit(WAEventType.MESSAGES_UPSERT,
+                  MessagesUpsert(messages=[_msg(GROUP, "G1", text="hey", ts=200)],
+                                 type=UpsertType.NOTIFY))
+    by_jid = {c["jid"]: c for c in store.recent_chats()}
+    assert set(by_jid) == {JID, GROUP}
+    assert by_jid[GROUP]["name"] is None
+    assert by_jid[GROUP]["conversation_timestamp"] == 200
+    store.close()
