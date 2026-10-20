@@ -87,6 +87,46 @@ async def test_sent_message_reaches_the_archive(monkeypatch, tmp_path):
     store.close()
 
 
+async def test_fetch_groups_emits_groups_upsert(monkeypatch):
+    """Nothing else emits groups.upsert, so archives never learned subjects."""
+    from piwapp.api import groups as gmod
+
+    events = TypedEventEmitter()
+    conn = _connection(events)
+    seen: list = []
+    events.on(WAEventType.GROUPS_UPSERT, seen.append)
+
+    async def fake_query(_node):
+        return None
+
+    parsed = [{"id": GROUP, "subject": "Team", "participants": []}]
+    monkeypatch.setattr(conn, "query", fake_query)
+    monkeypatch.setattr(gmod, "parse_groups_list", lambda _result: parsed)
+
+    assert await conn.fetch_groups() == parsed
+    assert seen == [parsed]
+
+
+async def test_broken_listener_does_not_break_fetch_groups(monkeypatch):
+    from piwapp.api import groups as gmod
+
+    events = TypedEventEmitter()
+    conn = _connection(events)
+
+    def boom(_payload):
+        raise RuntimeError("listener exploded")
+
+    events.on(WAEventType.GROUPS_UPSERT, boom)
+
+    async def fake_query(_node):
+        return None
+
+    monkeypatch.setattr(conn, "query", fake_query)
+    monkeypatch.setattr(gmod, "parse_groups_list", lambda _result: [{"id": GROUP, "subject": "T"}])
+
+    assert await conn.fetch_groups() == [{"id": GROUP, "subject": "T"}]
+
+
 async def test_broken_listener_does_not_fail_the_send(monkeypatch):
     events = TypedEventEmitter()
     conn = _connection(events)

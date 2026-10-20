@@ -14,13 +14,13 @@ JID = "111@s.whatsapp.net"
 GROUP = "120363000000000000@g.us"
 
 
-def _msg(jid, mid, *, from_me=False, text="hi", ts=1000, msg=None):
+def _msg(jid, mid, *, from_me=False, text="hi", ts=1000, msg=None, push="X"):
     return {
         "key": {"remoteJid": jid, "id": mid, "fromMe": from_me, "participant": None},
         "message": msg if msg is not None else proto.Message(conversation=text),
         "text": text,
         "messageTimestamp": ts,
-        "pushName": "X",
+        "pushName": push,
     }
 
 
@@ -84,6 +84,29 @@ async def test_chats_contacts_and_search(tmp_path):
                   MessagesUpsert(messages=[_msg(JID, "S1", text="weather is nice", ts=1)]))
     assert store.recent_chats()[0]["name"] == "Alice"
     assert store.search_text("weather")[0]["key"]["id"] == "S1"
+    store.close()
+
+
+async def test_chat_name_falls_back_to_contact_and_group(tmp_path):
+    """Live chats carry no name; contacts/groups metadata must fill them in."""
+    em = TypedEventEmitter()
+    store = SqliteStore(str(tmp_path / "f.db"))
+    store.bind(em)
+
+    await em.emit(WAEventType.CONTACTS_UPSERT, [{"id": JID, "name": None, "notify": "alice"}])
+    await em.emit(WAEventType.GROUPS_UPSERT, [{"id": GROUP, "subject": "Team"}])
+    await em.emit(WAEventType.MESSAGES_UPSERT,
+                  MessagesUpsert(messages=[_msg(JID, "M1", text="hi", ts=10, push=None),
+                                           _msg(GROUP, "M2", text="hey", ts=20, push=None)],
+                                 type=UpsertType.NOTIFY))
+
+    by_jid = {c["jid"]: c for c in store.recent_chats()}
+    assert by_jid[JID]["name"] == "alice"   # contact.notify
+    assert by_jid[GROUP]["name"] == "Team"  # group subject
+
+    # a real chat name always wins over the fallback
+    await em.emit(WAEventType.CHATS_UPSERT, [{"id": JID, "name": "Alice G.", "conversationTimestamp": 10}])
+    assert {c["jid"]: c for c in store.recent_chats()}[JID]["name"] == "Alice G."
     store.close()
 
 

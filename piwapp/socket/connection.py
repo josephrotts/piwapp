@@ -356,7 +356,17 @@ class Connection:
         """List groups this account participates in ({id, subject, ...})."""
         from ..api import groups as gmod
         result = await self.query(gmod.build_list_groups_query(generate_message_tag()))
-        return gmod.parse_groups_list(result)
+        groups = gmod.parse_groups_list(result)
+        # Let the archives learn group subjects: nothing else emits this event,
+        # so `groups` stayed empty and chat lists had no name to fall back on.
+        if groups and self.events is not None:
+            from ..events import WAEventType
+            try:
+                await self.events.emit(WAEventType.GROUPS_UPSERT, groups)
+            except Exception as exc:  # noqa: BLE001 - never fail a metadata query
+                if _DEBUG:
+                    print(f"[debug] groups.upsert emit failed: {exc!r}")
+        return groups
 
     async def send_group_text(self, group_jid: str, text: str) -> str:
         """Send a text message to a group (sender-key + SKDM fan-out). Requires login."""

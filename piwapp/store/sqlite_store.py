@@ -165,7 +165,25 @@ class SqliteStore:
     def recent_chats(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._db.execute(
             "SELECT * FROM chats ORDER BY conversation_timestamp DESC LIMIT ?", (limit,)).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            chat = dict(r)
+            if not chat.get("name"):
+                # live traffic carries no chat name (pushName belongs to the
+                # sender), so fall back to contacts and known group metadata
+                chat["name"] = self._chat_display_name(chat["jid"])
+            out.append(chat)
+        return out
+
+    def _chat_display_name(self, jid: str) -> str | None:
+        if jid.endswith("@g.us"):
+            meta = self.get_group_metadata(jid)
+            return (meta or {}).get("subject")
+        r = self._db.execute(
+            "SELECT name, notify FROM contacts WHERE jid=?", (jid,)).fetchone()
+        if r is None:
+            return None
+        return r["name"] or r["notify"]
 
     def last_sent_message(self) -> dict[str, Any] | None:
         r = self._db.execute(
